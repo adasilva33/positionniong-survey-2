@@ -1,0 +1,38 @@
+# --- Secrets: never commit (per-user / per-tenant OAuth artifacts) ---
+# credentials.example.json IS committed as a template; the real files are not.
+credentials.json
+token.json
+client_secret*.json
+*.client_secret.json
+!credentials.example.json
+
+# --- Python ---
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Generated output ---
+created_forms.csv
+
+# --- Generated / scratch workbooks (keep positioning_survey_universe.xlsx) ---
+test_universe_*.xlsx
+sample*.xlsx
+big*.xlsx
+~$*.xlsx
+
+# --- Editor / OS cruft ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+_*.bak
+_t.toml
+
+# --- Local Claude Code project settings (machine-specific) ---
+.claude/

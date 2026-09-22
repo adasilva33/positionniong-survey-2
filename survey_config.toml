@@ -1,0 +1,79 @@
+# ---------------------------------------------------------------------------
+# Positioning Survey — form configuration
+#
+# Everything here can be edited without touching create_form.py.
+# Delete this file and the script falls back to built-in defaults.
+# CLI flags (--region, --period, --max-options) override the matching value below.
+# ---------------------------------------------------------------------------
+
+# Form title. Placeholders: {region} {sector} {period}. Result is upper-cased.
+title = "{region} {sector} POSITIONING SURVEY - {period}"
+region = "EMEA"          # title prefix; "" to drop it
+period = ""              # e.g. "Q2 2026"; blank = current calendar quarter
+
+# Exact per-sector titles (used verbatim, no upper-casing, ignores `title`).
+# Sector name must match the Sector column in the workbook.
+[title_overrides]
+# Financials = "EMEA FINANCIALS POSITIONING SURVEY - Q2 2026"
+# Healthcare = "GLOBAL HEALTHCARE POSITIONING SURVEY - Q2 2026"
+
+# NOTE: the form header/logo banner is not settable via the Forms API. Add it by
+# hand in the Forms UI after creation, or clone a pre-branded template form.
+
+# ---------------------------------------------------------------------------
+# Page 1 text
+# ---------------------------------------------------------------------------
+
+# Consent / compliance banner (form description). Per-sector text in the
+# workbook's "Intro Text" sheet overrides this for that sector.
+intro_text = """We may consider the information that you provide when deciding whether to buy or sell stock or other investments. Therefore, we do not want to receive material, non-public information or information that is subject to a confidentiality obligation."""
+
+# Appended under the consent text on page 1.
+submit_notice = """When you submit this form, it will not automatically collect your details like name and email address unless you provide it yourself."""
+
+# Identification questions on page 1 (all required, short answer).
+[[identification]]
+title = "BROKER"
+help = ""
+
+[[identification]]
+title = "NAME OF PERSON COMPLETING"
+help = ""
+
+[[identification]]
+title = "EMAIL ADDRESS"
+help = "Please enter your work email address."
+
+# ---------------------------------------------------------------------------
+# Subsector section text (repeats on every "SECTOR: SUBSECTOR" page)
+# ---------------------------------------------------------------------------
+
+section_instructions = """Please enter your top 3 BBG tickers for each category (ranked).
+- Consensus Longs: Ticker 1 = strongest long, Ticker 2 = second, Ticker 3 = third
+- Consensus Shorts: Ticker 1 = strongest short, Ticker 2 = second, Ticker 3 = third
+- Contentious: Ticker 1-3 = debated names"""
+
+# ---------------------------------------------------------------------------
+# Limits / safety   (keep this section ABOVE [questions] — a TOML table runs
+# until the next [header], so trailing keys would fall into [questions])
+# ---------------------------------------------------------------------------
+[limits]
+
+# Google Forms rejects a form whose TOTAL dropdown-option count is too high
+# ("exceeding the choice limit"). Exact number is undocumented; this is a
+# conservative pre-flight ceiling. total options per form = tickers-in-sector x
+# number of questions (9). A sector over this is skipped unless --force.
+max_total_choices = 4000
+
+# Truncate every dropdown to this many options (0 = keep all). Escape hatch for
+# oversized subsectors.
+max_options_per_dropdown = 0
+
+# ---------------------------------------------------------------------------
+# Question groups and how many ranked tickers each. Question titles render as
+# "<GROUP>: TICKER <n>", e.g. "CONSENSUS LONG: TICKER 1".
+# ---------------------------------------------------------------------------
+[questions]
+"CONSENSUS LONG" = 3
+"CONSENSUS SHORT" = 3
+"CONTENTIOUS" = 3
