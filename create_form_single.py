@@ -24,6 +24,14 @@ docs (contradicts itself). The sector picker here defaults to RADIO, which is
 fine for a handful of sectors but unwieldy for dozens. Test with --dry-run and
 a small --limit before trusting this at full scale.
 
+Two-phase creation: a client-supplied itemId (e.g. "sector_select") is
+rejected by the API with "Invalid ID" — there's no documented valid format, so
+this doesn't try to set one. Instead: phase 1 creates every item letting
+Google assign IDs, reads each needed item's real itemId back from the
+batchUpdate reply; phase 2 sends one updateItem that adds goToSectionId to the
+sector-selector's options, addressed by its position in the form (Location is
+index-based, confirmed in the API docs) — not by its own itemId.
+
 Reuses workbook/config loading and auth from create_form.py — run that script's
 setup first (credentials.json, survey_config.toml, positioning_survey_universe.xlsx).
 
@@ -42,16 +50,33 @@ import create_form as cf
 SECTOR_QUESTION_TITLE = "SECTOR"
 SECTOR_QUESTION_HELP = "Choose your sector. You will then only see that sector's subsectors."
 
+# Google Forms enforces (at least) TWO independent per-form ceilings, distinct
+# API errors for each:
+#   "exceeding the choice limit" -> total dropdown/radio/checkbox OPTIONS,
+#     ~4000 (see cf.MAX_TOTAL_CHOICES / CAPACITY_MATRIX.md).
+#   "exceeding the entry limit"  -> total ITEMS (questions + page breaks),
+#     empirically between 200 (succeeded) and 444 (failed) in testing; 300 is
+#     a conservative guess, deliberately unverified above that number.
+# Both matter here because create_form_single.py must fit the WHOLE workbook's
+# subsectors as items in ONE form — create_form.py never approaches either
+# ceiling since each sector is its own small form.
+MAX_TOTAL_ITEMS = 300
 
-def _pagebreak_id(si, ui):
-    return f"s{si}_u{ui}"
 
+def build_phase1_requests(sectors, intros, sector_choice_type="RADIO"):
+    """Phase 1: create every item, letting Google assign itemIds (a client-
+    supplied itemId like "sector_select" is rejected with "Invalid ID" — no
+    documented format for a valid one, so don't fight it). The sector-selector
+    question is created with plain options (no goToSectionId yet) — that needs
+    the OTHER items' itemIds, which only exist after this phase's replies come
+    back. See build_phase2_request().
 
-def build_single_form_requests(sectors, intros, sector_choice_type="RADIO"):
-    """One ordered list of requests for the whole form. Every item gets a
-    client-chosen itemId (allowed on creation, see Forms API docs), so the
-    sector-selector's goToSectionId targets are known up front — no reply
-    parsing / second batchUpdate pass needed."""
+    Returns (requests, sector_selector_req_index, sector_first_pb_req_index):
+      - sector_selector_req_index: position of the sector-selector's createItem
+        within `requests` (== its reply's position after execution).
+      - sector_first_pb_req_index: {sector: position} of each sector's FIRST
+        subsector page-break createItem within `requests`.
+    """
     requests = []
     idx = 0
 
@@ -79,15 +104,11 @@ def build_single_form_requests(sectors, intros, sector_choice_type="RADIO"):
         idx += 1
 
     sector_names = list(sectors.keys())
-    sector_options = [
-        {"value": sector, "goToSectionId": _pagebreak_id(si, 0)}
-        for si, sector in enumerate(sector_names)
-    ]
+    sector_options = [{"value": sector} for sector in sector_names]
     requests.append(
         {
             "createItem": {
                 "item": {
-                    "itemId": "sector_select",
                     "title": SECTOR_QUESTION_TITLE,
                     "description": SECTOR_QUESTION_HELP,
                     "questionItem": {
@@ -104,9 +125,12 @@ def build_single_form_requests(sectors, intros, sector_choice_type="RADIO"):
             }
         }
     )
+    sector_selector_req_index = len(requests) - 1
+    sector_selector_location_index = idx
     idx += 1
 
-    for si, (sector, subs) in enumerate(sectors.items()):
+    sector_first_pb_req_index = {}
+    for sector, subs in sectors.items():
         subsector_names = list(subs.items())
         for ui, (subsector, tickers) in enumerate(subsector_names):
             if cf.MAX_OPTIONS_PER_DROPDOWN:
@@ -121,7 +145,6 @@ def build_single_form_requests(sectors, intros, sector_choice_type="RADIO"):
                 {
                     "createItem": {
                         "item": {
-                            "itemId": _pagebreak_id(si, ui),
                             "title": f"{sector}: {subsector}".upper(),
                             "description": section_desc,
                             "pageBreakItem": {},
@@ -130,6 +153,8 @@ def build_single_form_requests(sectors, intros, sector_choice_type="RADIO"):
                     }
                 }
             )
+            if ui == 0:
+                sector_first_pb_req_index[sector] = len(requests) - 1
             idx += 1
 
             is_last_subsector = ui == len(subsector_names) - 1
@@ -168,7 +193,33 @@ def build_single_form_requests(sectors, intros, sector_choice_type="RADIO"):
                     )
                     idx += 1
 
-    return requests
+    return requests, sector_selector_req_index, sector_selector_location_index, sector_first_pb_req_index
+
+
+def build_phase2_request(sector_choice_type, sector_names, sector_selector_location_index, target_item_ids):
+    """Phase 2: one updateItem that rewrites the sector-selector's options to
+    add goToSectionId, now that every target page-break's real itemId is
+    known from phase 1's replies. Location is index-based (confirmed in the
+    Forms API docs), so the item to update is addressed by its position in
+    the form, not by an itemId of its own."""
+    options = [
+        {"value": sector, "goToSectionId": target_item_ids[sector]}
+        for sector in sector_names
+    ]
+    return {
+        "updateItem": {
+            "item": {
+                "questionItem": {
+                    "question": {
+                        "required": True,
+                        "choiceQuestion": {"type": sector_choice_type, "options": options},
+                    }
+                }
+            },
+            "location": {"index": sector_selector_location_index},
+            "updateMask": "questionItem.question.choiceQuestion.options",
+        }
+    }
 
 
 def plan(sectors):
@@ -186,26 +237,34 @@ def plan(sectors):
         "tickers": n_tkr,
         "items": n_items,
         "choices": n_choices,
-        "over_limit": n_choices > cf.MAX_TOTAL_CHOICES,
+        "over_choice_limit": n_choices > cf.MAX_TOTAL_CHOICES,
+        "over_item_limit": n_items > MAX_TOTAL_ITEMS,
     }
 
 
 def print_plan(sectors, title):
     p = plan(sectors)
+    p["over_limit"] = p["over_choice_limit"] or p["over_item_limit"]
     print(f"\nSingle branching form: {p['sectors']} sector(s), {p['subsectors']} subsector(s), "
           f"{p['tickers']} ticker rows")
     print(f"Title    : {title}")
-    print(f"Items    : {p['items']}")
-    print(f"Choices  : {p['choices']}  (ALL sectors combined — this is the number that "
-          f"matters for the ~{cf.MAX_TOTAL_CHOICES} per-form ceiling)")
-    if p["over_limit"]:
-        print(f"\n!! OVER LIMIT: {p['choices']} > {cf.MAX_TOTAL_CHOICES}. "
-              f"This form WILL be rejected by Google. Reduce sectors/subsectors/"
-              f"tickers, set max_options_per_dropdown, or use --limit to test with "
-              f"fewer sectors. create_form.py (one form per sector) does not have "
-              f"this problem since each sector's choices are counted separately.")
-    else:
-        print("\nWithin the choice-limit estimate — plausible this fits in one form.")
+    print(f"Items    : {p['items']}  (limit ~{MAX_TOTAL_ITEMS}, unverified above that — "
+          f"see 'entry limit' in GUIDE.md §9)")
+    print(f"Choices  : {p['choices']}  (limit ~{cf.MAX_TOTAL_CHOICES} — 'choice limit')")
+    print("Both are ALL-sectors-combined totals: everything lives in one form.")
+    if p["over_item_limit"]:
+        print(f"\n!! OVER ITEM LIMIT: {p['items']} > ~{MAX_TOTAL_ITEMS}. Google is likely to "
+              f"reject this with \"exceeding the entry limit\" — confirmed empirically at "
+              f"444 items, even with choices well under the choice-limit guard. Use --limit "
+              f"to test with fewer sectors, or fewer subsectors per sector.")
+    if p["over_choice_limit"]:
+        print(f"\n!! OVER CHOICE LIMIT: {p['choices']} > {cf.MAX_TOTAL_CHOICES}. Google is "
+              f"likely to reject this with \"exceeding the choice limit\". Reduce sectors/"
+              f"subsectors/tickers, set max_options_per_dropdown, or use --limit.")
+    if not p["over_limit"]:
+        print("\nWithin both limit estimates — plausible this fits in one form. "
+              "create_form.py (one form per sector) doesn't have either problem, since "
+              "each sector's items/choices are counted separately.")
     return p
 
 
@@ -219,18 +278,46 @@ def create_single_form(service, sectors, intros, title, sector_choice_type):
     edit_url = f"https://docs.google.com/forms/d/{form_id}/edit"
     print(f"Created empty form -> {edit_url}")
 
-    requests = build_single_form_requests(sectors, intros, sector_choice_type)
+    (
+        requests,
+        _,
+        sector_selector_location_index,
+        sector_first_pb_req_index,
+    ) = build_phase1_requests(sectors, intros, sector_choice_type)
+
     n_chunks = max(1, -(-len(requests) // cf.CHUNK_SIZE))
+    all_replies = []
     try:
+        print(f"Phase 1/2: creating {len(requests)} items")
         for c, chunk in enumerate(cf.chunked(requests, cf.CHUNK_SIZE), 1):
             print(f"  batchUpdate {c}/{n_chunks} ({len(chunk)} requests)")
-            cf.execute_with_retry(
+            resp = cf.execute_with_retry(
                 service.forms().batchUpdate(formId=form_id, body={"requests": chunk})
             )
+            all_replies.extend(resp.get("replies", []))
     except HttpError as e:
         msg = str(e)
         print(f"  FAILED: {msg.splitlines()[0]}")
         print(f"  The Forms API cannot delete forms; trash this one in Drive: {edit_url}")
+        return None
+
+    target_item_ids = {
+        sector: all_replies[req_idx]["createItem"]["itemId"]
+        for sector, req_idx in sector_first_pb_req_index.items()
+    }
+    sector_names = list(sectors.keys())
+    phase2 = build_phase2_request(
+        sector_choice_type, sector_names, sector_selector_location_index, target_item_ids
+    )
+    try:
+        print("Phase 2/2: wiring sector branching")
+        cf.execute_with_retry(
+            service.forms().batchUpdate(formId=form_id, body={"requests": [phase2]})
+        )
+    except HttpError as e:
+        msg = str(e)
+        print(f"  FAILED (branching): {msg.splitlines()[0]}")
+        print(f"  Form was created but branching is not wired up: {edit_url}")
         return None
 
     print(f"\nDone -> {edit_url}")

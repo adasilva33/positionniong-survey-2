@@ -219,18 +219,42 @@ detour through the other sectors' questions.
 **Why this doesn't scale like `create_form.py`:** branching only controls
 which sections a given respondent *walks through* — it does not remove the
 other sectors' questions from the form's own definition. Every dropdown, for
-every sector, still exists in the one form and still counts toward the
-per-form ~4000-choice ceiling (`CAPACITY_MATRIX.md`), **combined across the
-whole workbook** rather than per sector. `create_form.py`'s 6-sector real
-universe (1791 choices total, biggest single sector 414) comfortably fits as
-one branching form; a bigger universe or many sectors likely won't — the
-`--dry-run` "Choices" line + the pre-flight guard catch this before creating
-anything.
+every sector, still exists in the one form. `create_form.py`'s 6-sector real
+universe (1791 choices, 185 items, biggest single sector 414 choices/45 items)
+comfortably fits as one branching form; a bigger universe or many sectors
+likely won't. `--dry-run` computes both totals below and the pre-flight guard
+catches an oversized one before creating anything.
+
+**TWO independent per-form ceilings, confirmed empirically 2026-09-22, distinct
+API errors for each:**
+
+| | error text | what it counts | empirical result |
+|---|---|---|---|
+| **choice limit** | `"...exceeding the choice limit"` | total dropdown/radio/checkbox **options**, summed across every question in the form | 3960 OK (few big questions), 4950 rejected — see `CAPACITY_MATRIX.md` |
+| **entry limit** | `"...exceeding the entry limit"` | total **items** (questions + page breaks) in the form | 285 OK, 444 rejected — even with only 1188 choices, nowhere near the choice cap |
+
+**Which one bites depends on the form's shape, not just its size.**
+`create_form.py`'s original calibration (10 subsections × up to 55 tickers) had
+few, option-heavy questions — it hit the *choice* limit around 4000 long
+before item count was a factor (only ~100 items). This script's shape (one
+form holding every subsector across the whole workbook) tends toward *many,
+smaller* questions — e.g. 11 sectors × 4 subsectors × 10 tickers = 444 items
+but only 3960 choices, and it hit the *entry* limit instead, well under the
+choice-limit guard. **Both guards must pass** — `MAX_TOTAL_ITEMS` (300,
+conservative — known-good 285, known-bad 444, not narrowed further) alongside
+`cf.MAX_TOTAL_CHOICES` (4000). `create_form.py` never approaches either
+ceiling, since each sector's items/choices are counted in its own separate
+form.
 
 Also unverified: Google's own docs are internally inconsistent on whether
 `DROP_DOWN` choice questions support branching (`RADIO` is unambiguous). The
 sector picker defaults to `RADIO`; `--sector-choice-type DROP_DOWN` is there
 to test on a big sector list, but hasn't been confirmed working.
+
+**Confirmed working (2026-09-22, live test):** a 7-sector / 28-subsector / 280
+ticker-row branching form (285 items, 2520 choices — under both guards) built
+successfully across 2 chunked `batchUpdate` calls, including the two-phase
+branching wire-up.
 
 **Not yet checked:** whether an untouched dropdown on a *skipped* sector's
 page still shows up as an unanswered response cell, and whether the "Limit to
